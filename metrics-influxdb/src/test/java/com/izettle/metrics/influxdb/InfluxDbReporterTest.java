@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.entry;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -283,6 +284,29 @@ public class InfluxDbReporterTest {
     }
 
     @Test
+    public void shouldIncludeMappedMeasurement() {
+        Map<String, String> measurementMappings = new HashMap<String, String>();
+        measurementMappings.put("resources", ".*resources.*");
+
+        MetricRegistry localRegistry = new MetricRegistry();
+        localRegistry.register("com.example.resources.RandomResource", mock(Meter.class));
+        final InfluxDbReporter reporter = InfluxDbReporter
+                .forRegistry(localRegistry)
+                .measurementMappings(measurementMappings)
+                .filterWithMeasurementMappings(true)
+                .build(influxDb);
+
+        reporter.report();
+
+        final ArgumentCaptor<InfluxDbPoint> influxDbPointCaptor = ArgumentCaptor.forClass(InfluxDbPoint.class);
+        verify(influxDb, atLeastOnce()).appendPoints(influxDbPointCaptor.capture());
+        InfluxDbPoint point = influxDbPointCaptor.getValue();
+
+        assertThat(point.getMeasurement()).isEqualTo("resources");
+        assertThat(point.getTags()).containsEntry("metricName", "com.example.resources.RandomResource");
+    }
+
+    @Test
     public void shouldNotMapMeasurementToDefinedMeasurementNameAndRegex() {
         Map<String, String> measurementMappings = new HashMap<String, String>();
         measurementMappings.put("health", ".*health.*");
@@ -306,6 +330,25 @@ public class InfluxDbReporterTest {
 
         assertThat(point.getMeasurement()).isEqualTo("com.example.resources.RandomResource");
         assertThat(point.getTags()).containsEntry("metricName", "com.example.resources.RandomResource");
+    }
+
+    @Test
+    public void shouldNotIncludeUnmappedMeasurement() {
+        Map<String, String> measurementMappings = new HashMap<String, String>();
+        measurementMappings.put("health", ".*health.*");
+
+        MetricRegistry localRegistry = new MetricRegistry();
+        localRegistry.register("com.example.resources.RandomResource", mock(Meter.class));
+        final InfluxDbReporter reporter = InfluxDbReporter
+                .forRegistry(localRegistry)
+                .measurementMappings(measurementMappings)
+                .filterWithMeasurementMappings(true)
+                .build(influxDb);
+
+        reporter.report();
+
+        final ArgumentCaptor<InfluxDbPoint> influxDbPointCaptor = ArgumentCaptor.forClass(InfluxDbPoint.class);
+        verify(influxDb, never()).appendPoints(influxDbPointCaptor.capture());
     }
 
     @Test(expected = RuntimeException.class)

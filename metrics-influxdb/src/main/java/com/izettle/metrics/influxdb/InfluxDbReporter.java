@@ -12,6 +12,8 @@ import com.codahale.metrics.ScheduledReporter;
 import com.codahale.metrics.Snapshot;
 import com.codahale.metrics.Timer;
 import com.izettle.metrics.influxdb.data.InfluxDbPoint;
+import com.izettle.metrics.influxdb.utils.MeasurementMappingCache;
+
 import java.net.ConnectException;
 import java.util.Collections;
 import java.util.HashMap;
@@ -32,6 +34,7 @@ public final class InfluxDbReporter extends ScheduledReporter {
         private TimeUnit rateUnit;
         private TimeUnit durationUnit;
         private MetricFilter filter;
+        private boolean filterWithMappings;
         private boolean skipIdleMetrics;
         private boolean groupGauges;
         private Set<String> includeTimerFields;
@@ -87,6 +90,17 @@ public final class InfluxDbReporter extends ScheduledReporter {
          */
         public Builder filter(MetricFilter filter) {
             this.filter = filter;
+            return this;
+        }
+
+        /**
+         * Apply a filter that uses the existence of a measurement mapping to determine if a metric should be
+         * included or not.
+         *
+         * @return {@code this}
+         */
+        public Builder filterWithMeasurementMappings(boolean filterWithMappings) {
+            this.filterWithMappings = filterWithMappings;
             return this;
         }
 
@@ -161,9 +175,14 @@ public final class InfluxDbReporter extends ScheduledReporter {
         }
 
         public InfluxDbReporter build(final InfluxDbSender influxDb) {
+            // Create mapping cache and then see if we should use it to filter
+            MeasurementMappingCache mappingCache = new MeasurementMappingCache(measurementMappings);
+            if (filterWithMappings) {
+                filter = mappingCache.getFilter();
+            }
             return new InfluxDbReporter(
                 registry, influxDb, tags, rateUnit, durationUnit, filter, skipIdleMetrics,
-                groupGauges, includeTimerFields, includeMeterFields, measurementMappings
+                groupGauges, includeTimerFields, includeMeterFields, mappingCache
             );
         }
     }
@@ -175,7 +194,7 @@ public final class InfluxDbReporter extends ScheduledReporter {
     private final boolean groupGauges;
     private final Set<String> includeTimerFields;
     private final Set<String> includeMeterFields;
-    private final Map<String, Pattern> measurementMappings;
+    private final MeasurementMappingCache mappingCache;
 
     private InfluxDbReporter(
         final MetricRegistry registry,
@@ -188,7 +207,7 @@ public final class InfluxDbReporter extends ScheduledReporter {
         final boolean groupGauges,
         final Set<String> includeTimerFields,
         final Set<String> includeMeterFields,
-        final Map<String, Pattern> measurementMappings
+        final MeasurementMappingCache mappingCache
     ) {
         super(registry, "influxDb-reporter", filter, rateUnit, durationUnit);
         influxDb.setTags(tags);
@@ -198,8 +217,8 @@ public final class InfluxDbReporter extends ScheduledReporter {
         this.includeTimerFields = includeTimerFields;
         this.includeMeterFields = includeMeterFields;
         this.previousValues = new TreeMap<String, Long>();
-        this.measurementMappings =
-            measurementMappings == null ? Collections.<String, Pattern>emptyMap() : measurementMappings;
+        this.mappingCache =
+                mappingCache == null ? new MeasurementMappingCache(Collections.emptyMap()) : mappingCache;
     }
 
     public static Builder forRegistry(MetricRegistry registry) {
@@ -473,14 +492,7 @@ public final class InfluxDbReporter extends ScheduledReporter {
     }
 
     private String getMeasurementName(final String name) {
-        for (Map.Entry<String, Pattern> entry : measurementMappings.entrySet()) {
-            final Pattern pattern = entry.getValue();
-
-            if (pattern.matcher(name).matches()) {
-                return entry.getKey();
-            }
-        }
-        return name;
+        return mappingCache.getMeasurementName(name);
     }
 
 }
