@@ -1,6 +1,7 @@
 package com.izettle.metrics.influxdb;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -9,8 +10,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.concurrent.TimeUnit;
+
 import org.junit.Test;
 
 public class InfluxDbHttpSenderTest {
@@ -42,7 +45,7 @@ public class InfluxDbHttpSenderTest {
         influxDbHttpSender.writeData(new byte[0]);
     }
 
-    @Test(expected = ConnectException.class)
+    @Test
     public void shouldThrowConnectException() throws Exception {
         InfluxDbHttpSender influxDbHttpSender = new InfluxDbHttpSender(
             "http",
@@ -55,7 +58,12 @@ public class InfluxDbHttpSenderTest {
             1000,
             ""
         );
-        influxDbHttpSender.writeData(new byte[0]);
+        try {
+            influxDbHttpSender.writeData(new byte[0]);
+            fail("Did not get expected exception.");
+        } catch (ConnectException | SocketTimeoutException e) {
+            // Expected
+        }
     }
 
     @Test(expected = IOException.class)

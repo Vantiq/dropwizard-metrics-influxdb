@@ -18,16 +18,23 @@ import java.net.ConnectException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class InfluxDbReporter extends ScheduledReporter {
+
+    public interface TagExtractor extends Function<Matcher, String> {
+    }
+
     public static class Builder {
         private final MetricRegistry registry;
         private Map<String, String> tags;
@@ -40,6 +47,7 @@ public final class InfluxDbReporter extends ScheduledReporter {
         private Set<String> includeTimerFields;
         private Set<String> includeMeterFields;
         private Map<String, Pattern> measurementMappings;
+        private Map<String, Map<String, Optional<TagExtractor>>> measurementTags;
 
         private Builder(MetricRegistry registry) {
             this.registry = registry;
@@ -174,11 +182,29 @@ public final class InfluxDbReporter extends ScheduledReporter {
             return this;
         }
 
+        /**
+         * Declare any tag keys for the mapped measurements.  Each declared key is associated with a capture group
+         * in the mapping regex which will be used to extract the tag's value.
+         *
+         * @param measurementTags
+         * @return {@code this}
+         */
+        public Builder measurementTags(Map<String, Map<String, Optional<TagExtractor>>> measurementTags) {
+            this.measurementTags = measurementTags;
+            return this;
+        }
+
         public InfluxDbReporter build(final InfluxDbSender influxDb) {
             // Create mapping cache and then see if we should use it to filter
-            MeasurementMappingCache mappingCache = new MeasurementMappingCache(measurementMappings);
+            MeasurementMappingCache mappingCache = new MeasurementMappingCache(measurementMappings, measurementTags);
             if (filterWithMappings) {
-                filter = mappingCache.getFilter();
+                MetricFilter mappingFilter = mappingCache.getFilter();
+                if (filter != null) {
+                    final MetricFilter explicitFilter = filter;
+                    filter = ((name, metric) -> explicitFilter.matches(name, metric) && mappingFilter.matches(name, metric));
+                } else {
+                    filter = mappingFilter;
+                }
             }
             return new InfluxDbReporter(
                 registry, influxDb, tags, rateUnit, durationUnit, filter, skipIdleMetrics,
@@ -217,8 +243,8 @@ public final class InfluxDbReporter extends ScheduledReporter {
         this.includeTimerFields = includeTimerFields;
         this.includeMeterFields = includeMeterFields;
         this.previousValues = new TreeMap<String, Long>();
-        this.mappingCache =
-                mappingCache == null ? new MeasurementMappingCache(Collections.emptyMap()) : mappingCache;
+        this.mappingCache = mappingCache == null ?
+                new MeasurementMappingCache(Collections.emptyMap(), Collections.emptyMap()) : mappingCache;
     }
 
     public static Builder forRegistry(MetricRegistry registry) {
@@ -312,15 +338,12 @@ public final class InfluxDbReporter extends ScheduledReporter {
             }
         }
 
-        Map<String, String> tags = new HashMap<String, String>();
-        tags.putAll(influxDb.getTags());
-        tags.put("metricName", name);
 
         if (!fields.isEmpty()) {
             influxDb.appendPoints(
                 new InfluxDbPoint(
                     getMeasurementName(name),
-                    tags,
+                    getMeasurementTags(name),
                     now,
                     fields));
         }
@@ -370,14 +393,10 @@ public final class InfluxDbReporter extends ScheduledReporter {
             fields.keySet().retainAll(includeTimerFields);
         }
 
-        Map<String, String> tags = new HashMap<String, String>();
-        tags.putAll(influxDb.getTags());
-        tags.put("metricName", name);
-
         influxDb.appendPoints(
             new InfluxDbPoint(
                 getMeasurementName(name),
-                tags,
+                getMeasurementTags(name),
                 now,
                 fields));
     }
@@ -400,14 +419,10 @@ public final class InfluxDbReporter extends ScheduledReporter {
         fields.put("p99", snapshot.get99thPercentile());
         fields.put("p999", snapshot.get999thPercentile());
 
-        Map<String, String> tags = new HashMap<String, String>();
-        tags.putAll(influxDb.getTags());
-        tags.put("metricName", name);
-
         influxDb.appendPoints(
             new InfluxDbPoint(
                 getMeasurementName(name),
-                tags,
+                getMeasurementTags(name),
                 now,
                 fields));
     }
@@ -415,13 +430,10 @@ public final class InfluxDbReporter extends ScheduledReporter {
     private void reportCounter(String name, Counter counter, long now) {
         Map<String, Object> fields = new HashMap<String, Object>();
         fields.put("count", counter.getCount());
-        Map<String, String> tags = new HashMap<String, String>();
-        tags.putAll(influxDb.getTags());
-        tags.put("metricName", name);
         influxDb.appendPoints(
             new InfluxDbPoint(
                 getMeasurementName(name),
-                tags,
+                getMeasurementTags(name),
                 now,
                 fields));
     }
@@ -430,15 +442,11 @@ public final class InfluxDbReporter extends ScheduledReporter {
         Map<String, Object> fields = new HashMap<String, Object>();
         Object sanitizeGauge = sanitizeGauge(gauge.getValue());
         if (sanitizeGauge != null) {
-            Map<String, String> tags = new HashMap<String, String>();
-            tags.putAll(influxDb.getTags());
-            tags.put("metricName", name);
-
             fields.put("value", sanitizeGauge);
             influxDb.appendPoints(
                 new InfluxDbPoint(
                     getMeasurementName(name),
-                    tags,
+                    getMeasurementTags(name),
                     now,
                     fields));
         }
@@ -459,14 +467,10 @@ public final class InfluxDbReporter extends ScheduledReporter {
             fields.keySet().retainAll(includeMeterFields);
         }
 
-        Map<String, String> tags = new HashMap<String, String>();
-        tags.putAll(influxDb.getTags());
-        tags.put("metricName", name);
-
         influxDb.appendPoints(
             new InfluxDbPoint(
                 getMeasurementName(name),
-                tags,
+                getMeasurementTags(name),
                 now,
                 fields));
     }
@@ -493,6 +497,14 @@ public final class InfluxDbReporter extends ScheduledReporter {
 
     private String getMeasurementName(final String name) {
         return mappingCache.getMeasurementName(name);
+    }
+
+    private Map<String, String> getMeasurementTags(final String name) {
+        Map<String, String> tags = new HashMap<String, String>();
+        tags.putAll(influxDb.getTags());
+        tags.put("metricName", name);
+        tags.putAll(mappingCache.getMeasurementTags(name));
+        return tags;
     }
 
 }

@@ -18,15 +18,18 @@ import com.codahale.metrics.MetricFilter;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Snapshot;
 import com.codahale.metrics.Timer;
+import com.izettle.metrics.influxdb.InfluxDbReporter.TagExtractor;
 import com.izettle.metrics.influxdb.data.InfluxDbPoint;
 import com.izettle.metrics.influxdb.data.InfluxDbWriteObject;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
+
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
@@ -284,6 +287,70 @@ public class InfluxDbReporterTest {
     }
 
     @Test
+    public void shouldMapMeasurementToDefinedMeasurementNameAndRegexWithTags() {
+        Map<String, String> measurementMappings = new HashMap<String, String>();
+        measurementMappings.put("resources", ".*\\.resources\\.(?<resourceName>.*)");
+        Map<String, Map<String, Optional<TagExtractor>>> measurementTags = new HashMap<>();
+        Map<String, Optional<TagExtractor>> tagKeys = new HashMap<>();
+        tagKeys.put("resourceName", Optional.empty());
+        measurementTags.put("resources", tagKeys);
+
+        final InfluxDbReporter reporter = InfluxDbReporter
+                .forRegistry(registry)
+                .measurementMappings(measurementMappings)
+                .measurementTags(measurementTags)
+                .build(influxDb);
+
+        reporter.report(
+                this.<Gauge>map(),
+                this.<Counter>map(),
+                this.<Histogram>map(),
+                this.map("com.example.resources.RandomResource", mock(Meter.class)),
+                this.<Timer>map()
+        );
+
+        final ArgumentCaptor<InfluxDbPoint> influxDbPointCaptor = ArgumentCaptor.forClass(InfluxDbPoint.class);
+        verify(influxDb, atLeastOnce()).appendPoints(influxDbPointCaptor.capture());
+        InfluxDbPoint point = influxDbPointCaptor.getValue();
+
+        assertThat(point.getMeasurement()).isEqualTo("resources");
+        assertThat(point.getTags()).containsEntry("metricName", "com.example.resources.RandomResource");
+        assertThat(point.getTags()).containsEntry("resourceName", "RandomResource");
+    }
+
+    @Test
+    public void shouldMapMeasurementToDefinedMeasurementNameAndRegexWithTagExtractor() {
+        Map<String, String> measurementMappings = new HashMap<String, String>();
+        measurementMappings.put("resources", ".*\\.resources\\.(?<resourceNameAlias>.*)");
+        Map<String, Map<String, Optional<TagExtractor>>> measurementTags = new HashMap<>();
+        Map<String, Optional<TagExtractor>> tagKeys = new HashMap<>();
+        tagKeys.put("resourceName", Optional.of(matcher -> matcher.group("resourceNameAlias")));
+        measurementTags.put("resources", tagKeys);
+
+        final InfluxDbReporter reporter = InfluxDbReporter
+                .forRegistry(registry)
+                .measurementMappings(measurementMappings)
+                .measurementTags(measurementTags)
+                .build(influxDb);
+
+        reporter.report(
+                this.<Gauge>map(),
+                this.<Counter>map(),
+                this.<Histogram>map(),
+                this.map("com.example.resources.RandomResource", mock(Meter.class)),
+                this.<Timer>map()
+        );
+
+        final ArgumentCaptor<InfluxDbPoint> influxDbPointCaptor = ArgumentCaptor.forClass(InfluxDbPoint.class);
+        verify(influxDb, atLeastOnce()).appendPoints(influxDbPointCaptor.capture());
+        InfluxDbPoint point = influxDbPointCaptor.getValue();
+
+        assertThat(point.getMeasurement()).isEqualTo("resources");
+        assertThat(point.getTags()).containsEntry("metricName", "com.example.resources.RandomResource");
+        assertThat(point.getTags()).containsEntry("resourceName", "RandomResource");
+    }
+
+    @Test
     public void shouldIncludeMappedMeasurement() {
         Map<String, String> measurementMappings = new HashMap<String, String>();
         measurementMappings.put("resources", ".*resources.*");
@@ -304,6 +371,26 @@ public class InfluxDbReporterTest {
 
         assertThat(point.getMeasurement()).isEqualTo("resources");
         assertThat(point.getTags()).containsEntry("metricName", "com.example.resources.RandomResource");
+    }
+
+    @Test
+    public void shouldIncludeMappedMeasurementUnlessExcluded() {
+        Map<String, String> measurementMappings = new HashMap<String, String>();
+        measurementMappings.put("resources", ".*resources.*");
+
+        MetricRegistry localRegistry = new MetricRegistry();
+        localRegistry.register("com.example.resources.RandomResource", mock(Meter.class));
+        final InfluxDbReporter reporter = InfluxDbReporter
+                .forRegistry(localRegistry)
+                .measurementMappings(measurementMappings)
+                .filterWithMeasurementMappings(true)
+                .filter(((name, metric) -> !"com.example.resources.RandomResource".equals(name)))
+                .build(influxDb);
+
+        reporter.report();
+
+        final ArgumentCaptor<InfluxDbPoint> influxDbPointCaptor = ArgumentCaptor.forClass(InfluxDbPoint.class);
+        verify(influxDb, never()).appendPoints(influxDbPointCaptor.capture());
     }
 
     @Test
