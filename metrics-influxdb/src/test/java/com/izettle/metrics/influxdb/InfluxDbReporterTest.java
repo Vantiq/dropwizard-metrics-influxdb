@@ -228,6 +228,68 @@ public class InfluxDbReporterTest {
     }
 
     @Test
+    public void reportsGroupedMeters() throws Exception {
+        final Meter meter = mock(Meter.class);
+        when(meter.getCount()).thenReturn(1L);
+        when(meter.getOneMinuteRate()).thenReturn(2.0);
+        when(meter.getFiveMinuteRate()).thenReturn(3.0);
+        when(meter.getFifteenMinuteRate()).thenReturn(4.0);
+        when(meter.getMeanRate()).thenReturn(5.0);
+
+        InfluxDbReporter groupReporter = InfluxDbReporter
+                .forRegistry(registry)
+                .convertRatesTo(TimeUnit.SECONDS)
+                .convertDurationsTo(TimeUnit.MILLISECONDS)
+                .filter(MetricFilter.ALL)
+                .groupMeters(true)
+                .build(influxDb);
+
+        groupReporter.report(this.<Gauge>map(), this.<Counter>map(), this.<Histogram>map(), this.map("meter", meter), this.<Timer>map());
+        final ArgumentCaptor<InfluxDbPoint> influxDbPointCaptor = ArgumentCaptor.forClass(InfluxDbPoint.class);
+        verify(influxDb, atLeastOnce()).appendPoints(influxDbPointCaptor.capture());
+        verify(influxDb).setTags(globalTags);
+        InfluxDbPoint point = influxDbPointCaptor.getValue();
+        assertThat(point.getMeasurement()).isEqualTo("meter");
+        assertThat(point.getFields()).isNotEmpty();
+        assertThat(point.getFields()).hasSize(1);
+        assertThat(point.getFields()).contains(entry("m1_rate", 2.0));
+        assertThat(point.getTags()).containsEntry("metricName", "meter");
+
+        groupReporter.report(this.<Gauge>map(), this.<Counter>map(), this.<Histogram>map(), this.map("meter.1", meter), this.<Timer>map());
+        verify(influxDb, atLeastOnce()).appendPoints(influxDbPointCaptor.capture());
+        point = influxDbPointCaptor.getValue();
+        assertThat(point.getMeasurement()).isEqualTo("meter");
+        assertThat(point.getFields()).isNotEmpty();
+        assertThat(point.getFields()).hasSize(1);
+        assertThat(point.getFields()).contains(entry("1", 2.0));
+        assertThat(point.getTags()).containsEntry("metricName", "meter");
+
+        // if metric name terminates in `.' field name should be empty
+        groupReporter.report(this.<Gauge>map(), this.<Counter>map(), this.<Histogram>map(), this.map("meter.", meter), this.<Timer>map());
+        verify(influxDb, atLeastOnce()).appendPoints(influxDbPointCaptor.capture());
+        point = influxDbPointCaptor.getValue();
+        assertThat(point.getMeasurement()).isEqualTo("meter");
+        assertThat(point.getFields()).isNotEmpty();
+        assertThat(point.getFields()).hasSize(1);
+        assertThat(point.getFields()).contains(entry("", 2.0));
+        assertThat(point.getTags()).containsEntry("metricName", "meter");
+
+        SortedMap<String, Meter> meters = this.map("meter.a", meter);
+        meters.put("meter.b", meter);
+        meters.put("meter.", meter);
+        meters.put("meter", meter);
+        groupReporter.report(this.<Gauge>map(), this.<Counter>map(), this.<Histogram>map(), meters, this.<Timer>map());
+        verify(influxDb, atLeastOnce()).appendPoints(influxDbPointCaptor.capture());
+
+        point = influxDbPointCaptor.getValue();
+        assertThat(point.getMeasurement()).isEqualTo("meter");
+        assertThat(point.getFields()).isNotEmpty();
+        assertThat(point.getFields()).hasSize(4);
+        assertThat(point.getFields()).contains(entry("", 2.0), entry("a", 2.0), entry("b", 2.0), entry("m1_rate", 2.0));
+        assertThat(point.getTags()).containsEntry("metricName", "meter");
+    }
+
+    @Test
     public void reportsIncludedMeters() throws Exception {
 
         InfluxDbReporter filteredReporter = InfluxDbReporter

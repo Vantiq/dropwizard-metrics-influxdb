@@ -143,4 +143,12 @@
         </dependencies>
     </dependencyManagement>
 
+    <distributionManagement>
+        <snapshotRepository>
+            <id>snapshots</id>
+            <name>5827334d27c6-snapshots</name>
+            <url>https://artifactory.vantiq.com/artifactory/ext-snapshot-local</url>
+        </snapshotRepository>
+    </distributionManagement>
+
 </project>
